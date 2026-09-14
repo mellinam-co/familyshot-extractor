@@ -1,0 +1,19 @@
+{
+  "name": "familyshot-extractor-vercel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "vercel dev"
+  },
+  "dependencies": {
+    "@sparticuz/chromium": "^138.0.2",
+    "puppeteer-core": "^24.16.0"
+  },
+  "devDependencies": {
+    "vercel": "^46.1.1"
+  }
+}
