@@ -108,6 +108,29 @@ ${result.variants.length === 1 ? '<p class="warn"><strong>Hinweis:</strong> Es w
 </body></html>`;
 }
 
+
+function textPage(result) {
+  const lines = [
+    "FAMILYSHOT_PRODUCT_DATA",
+    `Produkt: ${result.product_name || ""}`,
+    `Hersteller: ${result.manufacturer || ""}`,
+    `Variantentyp: ${result.variant_type || ""}`,
+    `Quelle: ${result.source_url || ""}`,
+    `Varianten gefunden: ${result.variants.length}`,
+    "",
+    ...result.variants.flatMap((v, index) => [
+      `VARIANTE ${index + 1}`,
+      `Name: ${v.variant || ""}`,
+      `SKU: ${v.sku || ""}`,
+      `Produkt-URL: ${v.product_url || ""}`,
+      `Bild-URL: ${v.image_url || ""}`,
+      ""
+    ]),
+    "END_FAMILYSHOT_PRODUCT_DATA"
+  ];
+  return lines.join("\n");
+}
+
 async function launchBrowser() {
   return puppeteer.launch({
     args: chromium.args,
@@ -332,18 +355,38 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Nur GET ist erlaubt." });
   }
 
-  const rawUrl = typeof req.query.url === "string" ? req.query.url : "";
   const format = typeof req.query.format === "string" ? req.query.format : "json";
+  let rawUrl = typeof req.query.url === "string" ? req.query.url : "";
+
+  // Amber-friendly path mode. Vercel rewrites
+  // /minilu/:slug/:sku -> /api/extract?format=html&slug=:slug&sku=:sku
+  // This avoids a URL nested inside another URL/query string.
+  const slug = typeof req.query.slug === "string" ? req.query.slug : "";
+  const sku = typeof req.query.sku === "string" ? req.query.sku : "";
+  if (!rawUrl && slug && sku) {
+    if (!/^[a-z0-9-]+$/i.test(slug) || !/^[A-Za-z0-9_-]+$/.test(sku)) {
+      return res.status(400).json({ error: "Ungültiger slug oder SKU." });
+    }
+    rawUrl = `https://www.minilu.de/shop/product/${slug}/${sku}`;
+  }
+
   if (!rawUrl) {
     return res.status(400).json({
-      error: "Parameter url fehlt.",
-      example: "/api/extract?url=https%3A%2F%2Fwww.minilu.de%2Fshop%2Fproduct%2Fmundspuelbecher-pp-180ml%2F111207"
+      error: "Produktangabe fehlt.",
+      examples: [
+        "/api/extract?url=https%3A%2F%2Fwww.minilu.de%2Fshop%2Fproduct%2Fmundspuelbecher-pp-180ml%2F111207",
+        "/minilu/mundspuelbecher-pp-180ml/111207"
+      ]
     });
   }
 
   try {
     const result = await extractAll(rawUrl);
     res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=3600");
+    if (format === "text") {
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      return res.status(200).send(textPage(result));
+    }
     if (format === "html") {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       return res.status(200).send(htmlPage(result));
