@@ -60,11 +60,24 @@ function extractVariantUrlsFromText(text, baseUrl, slug) {
 function htmlPage(result) {
   const rows = result.variants.map(v => `
     <tr>
-      <td>${escapeHtml(v.variant || "—")}</td>
+      <td><strong>${escapeHtml(v.variant || "—")}</strong></td>
       <td>${escapeHtml(v.sku || "—")}</td>
+      <td>${v.image_url ? `<img src="${escapeHtml(v.image_url)}" alt="${escapeHtml(`${v.variant || "Variante"} – SKU ${v.sku || ""}`)}" loading="lazy" /><br><a href="${escapeHtml(v.image_url)}" target="_blank" rel="noreferrer">Originalbild öffnen</a>` : "fehlt"}</td>
       <td>${v.product_url ? `<a href="${escapeHtml(v.product_url)}" target="_blank" rel="noreferrer">Produktseite</a>` : "—"}</td>
-      <td>${v.image_url ? `<a href="${escapeHtml(v.image_url)}" target="_blank" rel="noreferrer">Originalbild</a>` : "fehlt"}</td>
+      <td class="url">${escapeHtml(v.image_url || "—")}</td>
     </tr>`).join("");
+
+  const visibleJson = JSON.stringify({
+    product_name: result.product_name,
+    manufacturer: result.manufacturer,
+    variant_type: result.variant_type,
+    variants: result.variants.map(v => ({
+      variant: v.variant,
+      sku: v.sku,
+      product_url: v.product_url,
+      image_url: v.image_url
+    }))
+  }, null, 2);
 
   return `<!doctype html>
 <html lang="de">
@@ -73,7 +86,7 @@ function htmlPage(result) {
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>${escapeHtml(result.product_name || "Product variants")}</title>
 <style>
-body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:1100px;margin:40px auto;padding:0 20px;color:#111827}h1{font-size:28px}table{border-collapse:collapse;width:100%;margin-top:24px}th,td{padding:12px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}th{background:#f9fafb}code{background:#f3f4f6;padding:2px 6px;border-radius:5px}.muted{color:#6b7280}.ok{color:#047857}.warn{color:#b45309}a{color:#2563eb;word-break:break-all}.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:20px 0}.card{background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px}</style>
+body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:1200px;margin:40px auto;padding:0 20px;color:#111827}h1{font-size:28px}table{border-collapse:collapse;width:100%;margin-top:24px}th,td{padding:12px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}th{background:#f9fafb}code,pre{background:#f3f4f6;border-radius:6px}.muted{color:#6b7280}.ok{color:#047857}.warn{color:#b45309}a{color:#2563eb;word-break:break-all}.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:20px 0}.card{background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:14px}img{width:110px;height:110px;object-fit:contain;background:white;border:1px solid #e5e7eb;border-radius:8px}.url{font-size:12px;max-width:310px;word-break:break-all}pre{padding:16px;white-space:pre-wrap;word-break:break-word;font-size:12px;overflow:auto}</style>
 </head>
 <body>
 <h1>${escapeHtml(result.product_name || "Produkt")}</h1>
@@ -86,11 +99,12 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe
 </div>
 ${result.variants.length === 1 ? '<p class="warn"><strong>Hinweis:</strong> Es wurde nur eine Variante gefunden. Öffne die JSON-Ausgabe unter <code>/api/extract?url=...</code>, um die Discovery-Diagnose zu sehen.</p>' : '<p class="ok"><strong>OK:</strong> Mehrere Varianten wurden gefunden.</p>'}
 <table>
-<thead><tr><th>Variante</th><th>SKU</th><th>Produktseite</th><th>Originalbild</th></tr></thead>
+<thead><tr><th>Variante</th><th>SKU</th><th>Bildvorschau</th><th>Produktseite</th><th>Bild-URL</th></tr></thead>
 <tbody>${rows}</tbody>
 </table>
-<h2>Für amber</h2>
-<p>Lies diese Tabelle vollständig aus. Nutze pro Variante ausschließlich die zugeordnete SKU, Produktseite und Originalbild-URL. Erfinde keine Varianten.</p>
+<h2>Strukturierte Daten für amber</h2>
+<p>Lies die folgenden Daten vollständig aus. Nutze pro Variante ausschließlich die angegebene SKU, Produktseite und Originalbild-URL. Erfinde keine Varianten.</p>
+<pre>${escapeHtml(visibleJson)}</pre>
 </body></html>`;
 }
 
@@ -110,30 +124,68 @@ async function snapshotProduct(page, url) {
   return page.evaluate(() => {
     const text = document.body?.innerText || "";
     const title = document.title || "";
-
     const clean = s => (s || "").replace(/\s+/g, " ").trim();
     const textLines = text.split(/\n+/).map(clean).filter(Boolean);
 
     const skuMatch = text.match(/Artikelnummer\s*:?\s*([A-Za-z0-9_-]{4,30})/i);
     const sku = skuMatch?.[1] || null;
 
+    // Prefer the explicit "von <Hersteller>" shown in the PDP header.
+    // This avoids accidentally reading the top-navigation item
+    // "Hersteller → Medical-Fashion" as the product manufacturer.
     let manufacturer = null;
-    const manufacturerMatch = text.match(/(?:von|Hersteller)\s+([A-Za-z0-9ÄÖÜäöüß& .+\-]{2,80})/i);
-    if (manufacturerMatch) manufacturer = clean(manufacturerMatch[1]).split(/\n/)[0];
+    const byMatch = text.match(/(?:^|\n)\s*von\s+([^\n]{2,80})/i);
+    if (byMatch) manufacturer = clean(byMatch[1]);
 
+    // Fallback: use the last exact "Hersteller" property on the page.
+    if (!manufacturer) {
+      for (let i = textLines.length - 2; i >= 0; i--) {
+        if (/^Hersteller$/i.test(textLines[i]) && textLines[i + 1]) {
+          manufacturer = textLines[i + 1];
+          break;
+        }
+      }
+    }
+
+    // Prefer the product property "Farbe" near the bottom of the PDP.
     let variant = null;
-    const colorIndex = textLines.findIndex(x => /^Farbe$/i.test(x));
-    if (colorIndex >= 0 && textLines[colorIndex + 1]) variant = textLines[colorIndex + 1];
+    for (let i = textLines.length - 2; i >= 0; i--) {
+      if (/^Farbe$/i.test(textLines[i]) && textLines[i + 1]) {
+        variant = textLines[i + 1];
+        break;
+      }
+    }
+
     if (!variant && sku) {
       const skuIndex = textLines.findIndex(x => x === sku);
       const nearby = skuIndex >= 0 ? textLines.slice(Math.max(0, skuIndex - 8), skuIndex + 15) : [];
       variant = nearby.find(x => /^(weiß|weiss|schwarz|blau|grün|gruen|gelb|orange|pink|rosa|lila|violett|rot|braun|grau|transparent|cedro|berry|weinrot|türkis|tuerkis)$/i.test(x)) || null;
     }
 
+    // First choice: a real product heading that is contained in the browser title.
+    // This deliberately rejects generic modal headings such as "Huch!".
+    const badHeading = /^(Huch!?|Shop|Produktbeschreibung|Kurzbeschreibung|Lieferumfang|Produkteigenschaften|Kontakt|Menü)$/i;
     const headingCandidates = [...document.querySelectorAll("h1,h2,h3,h4")]
       .map(el => clean(el.textContent))
-      .filter(x => x && !/^(Shop|Produktbeschreibung|Lieferumfang|Produkteigenschaften)$/i.test(x));
-    const productName = headingCandidates.find(x => x.length >= 4 && x.length <= 120) || title.split("|")[0].replace(/\s+(weiß|weiss|schwarz|blau|grün|gruen|gelb|orange|pink|rosa|lila|violett|rot|braun|grau|transparent|cedro|berry|weinrot|türkis|tuerkis)(\s+\([^)]*\))?.*$/i, "").trim();
+      .filter(x => x && x.length >= 3 && x.length <= 160 && !badHeading.test(x));
+
+    let productName = headingCandidates.find(x => title.toLowerCase().includes(x.toLowerCase())) || null;
+
+    // Fallback: derive from title and remove the current variant/brand/shop suffix.
+    if (!productName) {
+      let derived = title.split("|")[0].replace(/\s+kaufen\s*$/i, "").trim();
+      if (manufacturer) {
+        const escapedBrand = manufacturer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        derived = derived.replace(new RegExp(`\\s*\\(${escapedBrand}\\)\\s*$`, "i"), "").trim();
+      } else {
+        derived = derived.replace(/\s*\([^)]{2,80}\)\s*$/i, "").trim();
+      }
+      if (variant) {
+        const escapedVariant = variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        derived = derived.replace(new RegExp(`\\s+${escapedVariant}\\s*$`, "i"), "").trim();
+      }
+      productName = derived || null;
+    }
 
     const imageCandidates = [...document.images].map(img => ({
       src: img.currentSrc || img.src || "",
@@ -142,8 +194,10 @@ async function snapshotProduct(page, url) {
       height: img.naturalHeight || img.height || 0
     })).filter(x => x.src);
 
-    const productImage = imageCandidates.find(x => /cdn\.vanderven\.de\/publicshop-prod\/media\//i.test(x.src) && !/badge|icon|logo|svg/i.test(x.src))
-      || imageCandidates.find(x => /Produktbild/i.test(x.alt) && !/svg/i.test(x.src))
+    // Prefer a CDN product image that contains the SKU in its filename/path.
+    const productImage = imageCandidates.find(x => sku && /cdn\.vanderven\.de\/publicshop-prod\/media\//i.test(x.src) && x.src.toLowerCase().includes(String(sku).toLowerCase()))
+      || imageCandidates.find(x => /cdn\.vanderven\.de\/publicshop-prod\/media\//i.test(x.src) && /Produktbild/i.test(x.alt))
+      || imageCandidates.find(x => /cdn\.vanderven\.de\/publicshop-prod\/media\//i.test(x.src) && !/badge|icon|logo|svg/i.test(x.src))
       || null;
 
     const hrefs = [...document.querySelectorAll("a[href]")].map(a => a.href).filter(Boolean);
@@ -195,8 +249,6 @@ async function discoverVariants(browser, productUrl, slug) {
     for (const u of extractVariantUrlsFromText(payload, productUrl.href, slug)) candidates.add(u);
   }
 
-  // Some shops store only a SKU in select/radio values. If the current SKU appears
-  // in the same control, sibling values are treated as candidate variant SKUs.
   const values = root.formValues || [];
   const currentSku = root.sku;
   if (currentSku && values.some(x => x.value === currentSku || x.value?.endsWith(`/${currentSku}`))) {
