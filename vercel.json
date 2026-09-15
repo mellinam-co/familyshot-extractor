@@ -1,12 +1,13 @@
 {
   "rewrites": [
+    { "source": "/minilu/:slug/:sku", "destination": "/api/extract?format=html&slug=:slug&sku=:sku" },
+    { "source": "/data/minilu/:slug/:sku", "destination": "/api/extract?format=text&slug=:slug&sku=:sku" },
     { "source": "/extract", "destination": "/api/extract?format=html" },
     { "source": "/health", "destination": "/api/health" }
   ],
   "functions": {
     "api/extract.js": {
-      "maxDuration": 60,
-      "memory": 2048
+      "maxDuration": 60
     }
   }
 }
