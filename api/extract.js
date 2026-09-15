@@ -22,6 +22,34 @@ function normalizeUrl(value, base) {
   }
 }
 
+function directReferenceImageUrl(value) {
+  if (!value) return null;
+  try {
+    const decoded = decodeURIComponent(value);
+    const marker = decoded.match(/https:\/\/cdn\.vanderven\.de\/publicshop-prod\/media\/[^?\s"'<>]+/i);
+    if (marker?.[0]) return marker[0];
+
+    const u = new URL(value);
+    if (/cdn\.vanderven\.de$/i.test(u.hostname) && u.pathname.startsWith('/publicshop-prod/media/')) {
+      u.search = '';
+      return u.href;
+    }
+  } catch {}
+  return value;
+}
+
+function referenceSheetPath(sourceUrl) {
+  try {
+    const u = new URL(sourceUrl);
+    const parts = u.pathname.split('/').filter(Boolean);
+    const i = parts.indexOf('product');
+    const slug = i >= 0 ? parts[i + 1] : null;
+    const sku = i >= 0 ? parts[i + 2] : null;
+    if (slug && sku) return `/reference-sheet/minilu/${encodeURIComponent(slug)}/${encodeURIComponent(sku)}`;
+  } catch {}
+  return null;
+}
+
 function assertAllowedProductUrl(raw) {
   const url = new URL(raw);
   const host = url.hostname.toLowerCase();
@@ -62,7 +90,7 @@ function htmlPage(result) {
     <tr>
       <td><strong>${escapeHtml(v.variant || "—")}</strong></td>
       <td>${escapeHtml(v.sku || "—")}</td>
-      <td>${v.image_url ? `<img src="${escapeHtml(v.image_url)}" alt="${escapeHtml(`${v.variant || "Variante"} – SKU ${v.sku || ""}`)}" loading="lazy" /><br><a href="${escapeHtml(v.image_url)}" target="_blank" rel="noreferrer">Originalbild öffnen</a>` : "fehlt"}</td>
+      <td>${v.reference_image_url || v.image_url ? `<img src="${escapeHtml(v.reference_image_url || v.image_url)}" alt="${escapeHtml(`${v.variant || "Variante"} – SKU ${v.sku || ""}`)}" loading="lazy" /><br><a href="${escapeHtml(v.reference_image_url || v.image_url)}" target="_blank" rel="noreferrer">Referenzbild öffnen</a>` : "fehlt"}</td>
       <td>${v.product_url ? `<a href="${escapeHtml(v.product_url)}" target="_blank" rel="noreferrer">Produktseite</a>` : "—"}</td>
       <td class="url">${escapeHtml(v.image_url || "—")}</td>
     </tr>`).join("");
@@ -75,7 +103,8 @@ function htmlPage(result) {
       variant: v.variant,
       sku: v.sku,
       product_url: v.product_url,
-      image_url: v.image_url
+      image_url: v.image_url,
+      reference_image_url: v.reference_image_url
     }))
   }, null, 2);
 
@@ -98,6 +127,7 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe
   <div class="card"><strong>Discovery</strong><br>${escapeHtml(result.discovery?.method || "DOM")}</div>
 </div>
 ${result.variants.length === 1 ? '<p class="warn"><strong>Hinweis:</strong> Es wurde nur eine Variante gefunden. Öffne die JSON-Ausgabe unter <code>/api/extract?url=...</code>, um die Discovery-Diagnose zu sehen.</p>' : '<p class="ok"><strong>OK:</strong> Mehrere Varianten wurden gefunden.</p>'}
+${result.reference_sheet_url ? `<div class="card" style="margin:18px 0"><strong>Eine visuelle Referenz für alle Varianten</strong><br><a href="${escapeHtml(result.reference_sheet_url)}" target="_blank" rel="noreferrer">Reference Sheet als PNG öffnen</a><br><span class="muted">Diese einzelne Bild-URL ist für die Familyshot-Generierung vorgesehen.</span></div>` : ''}
 <table>
 <thead><tr><th>Variante</th><th>SKU</th><th>Bildvorschau</th><th>Produktseite</th><th>Bild-URL</th></tr></thead>
 <tbody>${rows}</tbody>
@@ -116,6 +146,7 @@ function textPage(result) {
     `Hersteller: ${result.manufacturer || ""}`,
     `Variantentyp: ${result.variant_type || ""}`,
     `Quelle: ${result.source_url || ""}`,
+    `Reference-Sheet: ${result.reference_sheet_url || ""}`,
     `Varianten gefunden: ${result.variants.length}`,
     "",
     ...result.variants.flatMap((v, index) => [
@@ -124,6 +155,7 @@ function textPage(result) {
       `SKU: ${v.sku || ""}`,
       `Produkt-URL: ${v.product_url || ""}`,
       `Bild-URL: ${v.image_url || ""}`,
+      `Referenzbild-URL: ${v.reference_image_url || v.image_url || ""}`,
       ""
     ]),
     "END_FAMILYSHOT_PRODUCT_DATA"
@@ -291,7 +323,7 @@ async function discoverVariants(browser, productUrl, slug) {
   };
 }
 
-async function extractAll(rawUrl) {
+export async function extractAll(rawUrl) {
   const productUrl = assertAllowedProductUrl(rawUrl);
   const slug = productSlugFromUrl(productUrl);
   if (!slug) throw new Error("Produkt-Slug konnte nicht erkannt werden.");
@@ -310,7 +342,8 @@ async function extractAll(rawUrl) {
           sku: snap.sku,
           variant: snap.variant,
           product_url: url,
-          image_url: snap.productImage?.src || null
+          image_url: snap.productImage?.src || null,
+          reference_image_url: directReferenceImageUrl(snap.productImage?.src || null)
         });
       } catch (err) {
         variants.push({ sku: null, variant: null, product_url: url, image_url: null, error: String(err?.message || err) });
@@ -337,6 +370,7 @@ async function extractAll(rawUrl) {
       source_url: productUrl.href,
       variant_type: "Farbe",
       variants: deduped,
+      reference_sheet_path: referenceSheetPath(productUrl.href),
       discovery: {
         method: "browser DOM + XHR/fetch payloads + form values",
         candidate_urls: discovery.urls.length,
@@ -382,6 +416,10 @@ export default async function handler(req, res) {
 
   try {
     const result = await extractAll(rawUrl);
+    const proto = String(req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
+    const host = req.headers.host;
+    result.reference_sheet_url = result.reference_sheet_path && host ? `${proto}://${host}${result.reference_sheet_path}` : null;
+    delete result.reference_sheet_path;
     res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=3600");
     if (format === "text") {
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
